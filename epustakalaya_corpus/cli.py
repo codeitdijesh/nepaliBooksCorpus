@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 
 from .pipeline import (
+    classify_fetch_for_ocr,
     crawl_manifest,
     extract_text,
+    filter_manifest,
     fetch_pdfs,
     package_corpus,
     probe_access,
@@ -29,6 +31,18 @@ def main() -> int:
     crawl.add_argument("--resume", action="store_true")
     crawl.set_defaults(func=crawl_manifest)
 
+    filter_cmd = subparsers.add_parser("filter-manifest", help="Create a smaller manifest before probing or download.")
+    filter_cmd.add_argument("--manifest", required=True)
+    filter_cmd.add_argument("--output", required=True)
+    filter_cmd.add_argument("--summary")
+    filter_cmd.add_argument("--exclude-english", action="store_true")
+    filter_cmd.add_argument("--exclude-textbooks", action="store_true")
+    filter_cmd.add_argument("--exclude-english-textbooks-only", action="store_true")
+    filter_cmd.add_argument("--include-literature", action="store_true")
+    filter_cmd.add_argument("--include-pattern", action="append", default=[])
+    filter_cmd.add_argument("--exclude-pattern", action="append", default=[])
+    filter_cmd.set_defaults(func=filter_manifest)
+
     probe = subparsers.add_parser("probe-access", help="Check whether manifest documents expose direct PDF access.")
     probe.add_argument("--manifest", required=True)
     probe.add_argument("--output", required=True)
@@ -48,6 +62,18 @@ def main() -> int:
     fetch.add_argument("--overwrite", action="store_true")
     fetch.add_argument("--resume", action="store_true")
     fetch.set_defaults(func=fetch_pdfs)
+
+    split_ocr = subparsers.add_parser(
+        "split-fetch-by-ocr",
+        help="Inspect downloaded PDFs and split them into native-text versus OCR-needed inventories.",
+    )
+    split_ocr.add_argument("--fetch", required=True)
+    split_ocr.add_argument("--good-output", required=True)
+    split_ocr.add_argument("--ocr-output", required=True)
+    split_ocr.add_argument("--manifest")
+    split_ocr.add_argument("--summary")
+    split_ocr.add_argument("--min-chars-per-page", type=int, default=50)
+    split_ocr.set_defaults(func=classify_fetch_for_ocr)
 
     extract = subparsers.add_parser("extract-text", help="Extract text from downloaded PDFs with optional OCR fallback.")
     extract.add_argument("--fetch", required=True)

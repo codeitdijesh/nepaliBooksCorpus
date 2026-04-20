@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -25,12 +26,132 @@ from .utils import (
     text_hash_for_dedupe,
 )
 
+DEFAULT_TEXTBOOK_PATTERNS = [
+    r"\btextbook\b",
+    r"\bcurriculum\b",
+    r"\bteacher'?s guide\b",
+    r"\blearning materials?\b",
+    r"\bearly grade reading\b",
+    r"\btechnical and vocational\b",
+    r"\bgrade\s*[0-9]+\b",
+    r"\bopen school\b",
+    r"\bself learning material\b",
+    r"\bcehrd\b",
+    r"\bcdc\b",
+    r"पाठ्यपुस्तक",
+    r"पाठ्यक्रम",
+    r"शिक्षक निर्देशिका",
+    r"प्रारम्भिक कक्षा",
+    r"कक्षा\s*[०-९0-9]+",
+    r"बाल सन्दर्भसामग्री",
+    r"सिकाइ सामग्री",
+    r"प्राविधिक",
+    r"व्यावसायिक",
+    r"स्वाध्ययन",
+    r"स्वअध्ययन",
+    r"पाठ्यक्रम विकास केन्द्र",
+    r"शिक्षा तथा मानव स्रोत विकास केन्द्र",
+]
+
+DEFAULT_LITERATURE_PATTERNS = [
+    r"\bpoems?\b",
+    r"\bpoetry\b",
+    r"\bnovel\b",
+    r"\bliterature\b",
+    r"\bessays?\b",
+    r"\bstor(?:y|ies)\b",
+    r"\bfiction\b",
+    r"\bdrama\b",
+    r"\bplay\b",
+    r"\bfolk ?tales?\b",
+    r"\bfolklore\b",
+    r"\bchildren'?s literature\b",
+    r"कविता",
+    r"कवितासङ्ग्रह",
+    r"कथा",
+    r"कथासङ्ग्रह",
+    r"उपन्यास",
+    r"साहित्य",
+    r"निबन्ध",
+    r"नाटक",
+    r"गजल",
+    r"महाकाव्य",
+    r"खण्डकाव्य",
+    r"लोकसाहित्य",
+    r"बालकथा",
+    r"बालसाहित्य",
+]
+
 
 def _print_utf8(text: str) -> None:
     try:
         sys.stdout.buffer.write(text.encode("utf-8") + b"\n")
     except Exception:  # noqa: BLE001
         print(text.encode("unicode_escape").decode("ascii"))
+
+
+def build_manifest_search_blob(row: dict[str, Any]) -> str:
+    metadata = row.get("metadata") or {}
+    parts: list[str] = []
+
+    for key in ("title", "language", "publisher", "publication_year"):
+        value = row.get(key)
+        if value:
+            parts.append(str(value))
+
+    for keyword in row.get("keywords") or []:
+        if keyword:
+            parts.append(str(keyword))
+
+    for key, value in metadata.items():
+        parts.append(str(key))
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value if item)
+        elif value:
+            parts.append(str(value))
+
+    return " ".join(parts)
+
+
+def _matches_any_pattern(value: str, patterns: list[str]) -> bool:
+    return any(re.search(pattern, value, re.IGNORECASE) for pattern in patterns)
+
+
+def manifest_filter_decision(
+    row: dict[str, Any],
+    *,
+    exclude_english: bool = False,
+    exclude_textbooks: bool = False,
+    exclude_english_textbooks_only: bool = False,
+    include_literature: bool = False,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    search_blob = build_manifest_search_blob(row)
+    language = str(row.get("language") or "")
+    is_english = "english" in language.lower()
+    is_textbook = _matches_any_pattern(search_blob, DEFAULT_TEXTBOOK_PATTERNS)
+
+    if exclude_english_textbooks_only and is_english and is_textbook:
+        reasons.append("english_textbook")
+
+    if exclude_english and is_english:
+        reasons.append("english")
+
+    if exclude_textbooks and is_textbook:
+        reasons.append("textbook")
+
+    if include_literature and not _matches_any_pattern(search_blob, DEFAULT_LITERATURE_PATTERNS):
+        reasons.append("missing_literature_signal")
+
+    if include_patterns and not _matches_any_pattern(search_blob, include_patterns):
+        reasons.append("missing_include_pattern")
+
+    if exclude_patterns and _matches_any_pattern(search_blob, exclude_patterns):
+        reasons.append("exclude_pattern")
+
+    return (not reasons, reasons)
 
 
 def crawl_manifest(args: Any) -> int:
@@ -415,6 +536,181 @@ def summarize_probe(args: Any) -> int:
         output.write_text(rendered, encoding="utf-8")
     _print_utf8(rendered)
     return 0
+
+
+def filter_manifest(args: Any) -> int:
+    manifest_rows = read_jsonl(Path(args.manifest))
+    output = Path(args.output)
+    summary_path = Path(args.summary) if args.summary else None
+
+    summary = {
+        "manifest_path": str(Path(args.manifest)),
+        "output_path": str(output),
+        "rows_total": len(manifest_rows),
+        "rows_kept": 0,
+        "rows_excluded": 0,
+        "excluded_english_textbook": 0,
+        "excluded_english": 0,
+        "excluded_textbook": 0,
+        "excluded_missing_literature_signal": 0,
+        "excluded_missing_include_pattern": 0,
+        "excluded_exclude_pattern": 0,
+        "kept_rows_with_known_size": 0,
+        "kept_bytes_known": 0,
+        "kept_size_known": "0 B",
+    }
+
+    if output.exists():
+        output.unlink()
+
+    for row in manifest_rows:
+        keep, reasons = manifest_filter_decision(
+            row,
+            exclude_english=bool(args.exclude_english),
+            exclude_textbooks=bool(args.exclude_textbooks),
+            exclude_english_textbooks_only=bool(args.exclude_english_textbooks_only),
+            include_literature=bool(args.include_literature),
+            include_patterns=list(args.include_pattern or []),
+            exclude_patterns=list(args.exclude_pattern or []),
+        )
+
+        if not keep:
+            summary["rows_excluded"] += 1
+            for reason in reasons:
+                if reason == "english_textbook":
+                    summary["excluded_english_textbook"] += 1
+                elif reason == "english":
+                    summary["excluded_english"] += 1
+                elif reason == "textbook":
+                    summary["excluded_textbook"] += 1
+                elif reason == "missing_literature_signal":
+                    summary["excluded_missing_literature_signal"] += 1
+                elif reason == "missing_include_pattern":
+                    summary["excluded_missing_include_pattern"] += 1
+                elif reason == "exclude_pattern":
+                    summary["excluded_exclude_pattern"] += 1
+            continue
+
+        append_jsonl(output, row)
+        summary["rows_kept"] += 1
+        size_bytes = parse_size_to_bytes(row.get("file_size_label"))
+        if size_bytes is not None:
+            summary["kept_rows_with_known_size"] += 1
+            summary["kept_bytes_known"] += size_bytes
+
+    summary["kept_size_known"] = format_bytes(summary["kept_bytes_known"])
+    rendered = json.dumps(summary, ensure_ascii=False, indent=2)
+    if summary_path:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(rendered, encoding="utf-8")
+    _print_utf8(rendered)
+    return 0
+
+
+def classify_fetch_for_ocr(args: Any) -> int:
+    fetch_rows = read_jsonl(Path(args.fetch))
+    manifest = index_by(read_jsonl(Path(args.manifest)), "doc_id") if args.manifest else {}
+    good_output = Path(args.good_output)
+    ocr_output = Path(args.ocr_output)
+    summary_path = Path(args.summary) if args.summary else None
+
+    if good_output.exists():
+        good_output.unlink()
+    if ocr_output.exists():
+        ocr_output.unlink()
+
+    summary = {
+        "fetch_path": str(Path(args.fetch)),
+        "good_output_path": str(good_output),
+        "ocr_output_path": str(ocr_output),
+        "rows_total": len(fetch_rows),
+        "rows_missing_pdf": 0,
+        "good_rows": 0,
+        "ocr_rows": 0,
+        "native_rows": 0,
+        "mixed_rows": 0,
+        "image_only_rows": 0,
+        "good_bytes": 0,
+        "ocr_bytes": 0,
+        "good_size": "0 B",
+        "ocr_size": "0 B",
+    }
+
+    for row in fetch_rows:
+        pdf_path_value = row.get("pdf_path")
+        if not pdf_path_value:
+            summary["rows_missing_pdf"] += 1
+            continue
+        pdf_path = Path(str(pdf_path_value))
+        if not pdf_path.exists():
+            summary["rows_missing_pdf"] += 1
+            continue
+
+        profile = inspect_pdf_text_profile(pdf_path, args.min_chars_per_page)
+        doc_id = str(row.get("doc_id"))
+        manifest_row = manifest.get(doc_id, {})
+        enriched_row = {
+            **row,
+            "title": manifest_row.get("title"),
+            "language": manifest_row.get("language"),
+            "publisher": manifest_row.get("publisher"),
+            **profile,
+            "needs_ocr": profile["text_access"] != "native",
+        }
+
+        file_bytes = pdf_path.stat().st_size
+        if profile["text_access"] == "native":
+            append_jsonl(good_output, enriched_row)
+            summary["good_rows"] += 1
+            summary["native_rows"] += 1
+            summary["good_bytes"] += file_bytes
+        else:
+            append_jsonl(ocr_output, enriched_row)
+            summary["ocr_rows"] += 1
+            summary["ocr_bytes"] += file_bytes
+            if profile["text_access"] == "mixed":
+                summary["mixed_rows"] += 1
+            else:
+                summary["image_only_rows"] += 1
+
+    summary["good_size"] = format_bytes(summary["good_bytes"])
+    summary["ocr_size"] = format_bytes(summary["ocr_bytes"])
+    rendered = json.dumps(summary, ensure_ascii=False, indent=2)
+    if summary_path:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(rendered, encoding="utf-8")
+    _print_utf8(rendered)
+    return 0
+
+
+def inspect_pdf_text_profile(pdf_path: Path, min_chars_per_page: int) -> dict[str, Any]:
+    pages_total = 0
+    native_text_pages = 0
+    ocr_candidate_pages = 0
+
+    with fitz.open(pdf_path) as document:
+        for page in document:
+            pages_total += 1
+            native_text = page.get_text("text", sort=True).strip()
+            if len(native_text) >= min_chars_per_page:
+                native_text_pages += 1
+            else:
+                ocr_candidate_pages += 1
+
+    if pages_total == 0 or ocr_candidate_pages == pages_total:
+        text_access = "ocr"
+    elif ocr_candidate_pages == 0:
+        text_access = "native"
+    else:
+        text_access = "mixed"
+
+    return {
+        "pages_total": pages_total,
+        "native_text_pages": native_text_pages,
+        "ocr_candidate_pages": ocr_candidate_pages,
+        "native_text_ratio": round(native_text_pages / pages_total, 4) if pages_total else 0.0,
+        "text_access": text_access,
+    }
 
 
 def _extract_document_text(
