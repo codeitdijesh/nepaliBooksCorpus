@@ -1,0 +1,13 @@
+crawl-manifest start page_start=1 page_end=692 resume=True output=data\manifest_full.jsonl
+crawl-manifest page_complete page=1 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=2 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=3 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=4 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=5 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=6 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=7 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=8 total_pages_seen=692 processed_docs=0
+crawl-manifest page_complete page=9 total_pages_seen=692 processed_docs=5
+crawl-manifest page_complete page=10 total_pages_seen=692 processed_docs=20
+crawl-manifest page_complete page=11 total_pages_seen=692 processed_docs=33
+crawl-manifest page_complete page=12 total_pages_seen=692 processed_docs=48

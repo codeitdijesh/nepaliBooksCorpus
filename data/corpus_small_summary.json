@@ -1,0 +1,11 @@
+{
+  "packaged_at": "2026-04-19T23:33:55+00:00",
+  "manifest_rows": 13,
+  "probe_rows": 1,
+  "fetch_rows": 1,
+  "extract_rows": 1,
+  "included_rows": 1,
+  "skipped_duplicate_doc_id": 0,
+  "skipped_duplicate_text": 0,
+  "skipped_missing_text": 12
+}

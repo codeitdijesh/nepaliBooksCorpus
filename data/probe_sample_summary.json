@@ -1,0 +1,10 @@
+{
+  "probe_path": "data\\probe_sample.jsonl",
+  "rows_total": 3,
+  "access_mode_counts": {
+    "direct_pdf": 3
+  },
+  "direct_pdf_rows_with_content_length": 3,
+  "direct_pdf_bytes_known": 68461573,
+  "direct_pdf_size_known": "65.29 MB"
+}
