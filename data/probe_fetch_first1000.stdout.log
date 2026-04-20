@@ -1,8 +1,0 @@
-run_probe_fetch_first1000 start workspace=C:\Users\DSU Student\Desktop\kaggleProject
-probe-access start manifest=data/manifest_first1000.jsonl limit=0 resume=True output=data\probe_first1000.jsonl
-probe-access progress processed=100 output=data\probe_first1000.jsonl
-probe-access progress processed=200 output=data\probe_first1000.jsonl
-probe-access progress processed=300 output=data\probe_first1000.jsonl
-probe-access progress processed=400 output=data\probe_first1000.jsonl
-probe-access progress processed=500 output=data\probe_first1000.jsonl
-probe-access progress processed=600 output=data\probe_first1000.jsonl
