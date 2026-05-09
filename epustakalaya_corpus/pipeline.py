@@ -6,7 +6,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import fitz
 from PIL import Image
@@ -154,33 +154,126 @@ def manifest_filter_decision(
     return (not reasons, reasons)
 
 
+def discover_highest_accessible_page(
+    *,
+    start_page: int,
+    end_page: int,
+    is_accessible: Callable[[int], bool],
+) -> int:
+    if end_page <= start_page:
+        return start_page
+
+    last_success = start_page
+    low = start_page + 1
+    high = end_page
+    while low <= high:
+        mid = (low + high) // 2
+        if is_accessible(mid):
+            last_success = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    return last_success
+
+
+def _search_page_is_accessible(
+    client: PustakalayaClient,
+    *,
+    page: int,
+    query: str,
+    form_filter: str,
+    search_in: str,
+) -> bool:
+    try:
+        client.fetch_search_page(
+            page=page,
+            query=query,
+            form_filter=form_filter,
+            search_in=search_in,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _call_with_retries(*, attempts: int, label: str, action: Callable[[], str]) -> str:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return action()
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt >= attempts:
+                break
+            _print_utf8(f"{label} retry_attempt={attempt} error={exc}")
+    assert last_error is not None
+    raise last_error
+
+
 def crawl_manifest(args: Any) -> int:
     output = Path(args.output)
     done = existing_ids(output) if args.resume else set()
     client = PustakalayaClient(delay_seconds=args.delay_seconds, timeout_seconds=args.timeout_seconds)
     processed_docs = 0
+    failed_detail_docs = 0
 
-    total_pages = args.page_end
+    total_pages = args.page_start
     current_page = args.page_start
+    page_limit_discovered = False
     _print_utf8(
         f"crawl-manifest start page_start={args.page_start} page_end={args.page_end} resume={args.resume} output={output}"
     )
     while current_page <= total_pages:
-        page_html = client.fetch_search_page(
-            page=current_page,
-            query=args.query,
-            form_filter=args.form_filter,
-            search_in=args.search_in,
+        page_html = _call_with_retries(
+            attempts=3,
+            label=f"crawl-manifest search_page_failed page={current_page}",
+            action=lambda: client.fetch_search_page(
+                page=current_page,
+                query=args.query,
+                form_filter=args.form_filter,
+                search_in=args.search_in,
+            ),
         )
         parsed_page = parse_search_page(page_html, client.base_url)
-        total_pages = min(parsed_page["total_pages"], args.page_end or parsed_page["total_pages"])
+        if not page_limit_discovered:
+            advertised_total_pages = int(parsed_page["total_pages"])
+            configured_total_pages = min(advertised_total_pages, args.page_end or advertised_total_pages)
+            total_pages = discover_highest_accessible_page(
+                start_page=current_page,
+                end_page=configured_total_pages,
+                is_accessible=lambda page: _search_page_is_accessible(
+                    client,
+                    page=page,
+                    query=args.query,
+                    form_filter=args.form_filter,
+                    search_in=args.search_in,
+                ),
+            )
+            page_limit_discovered = True
+            _print_utf8(
+                "crawl-manifest page_limit "
+                f"advertised_total_pages={advertised_total_pages} configured_total_pages={configured_total_pages} "
+                f"reachable_total_pages={total_pages}"
+            )
 
         for result in parsed_page["results"]:
             doc_id = result["doc_id"]
             if doc_id in done:
                 continue
-            detail_html = client.fetch_detail_page(result["detail_url"])
-            detail = parse_detail_page(detail_html, result["detail_url"])
+            try:
+                detail_html = _call_with_retries(
+                    attempts=3,
+                    label=f"crawl-manifest detail_page_failed page={current_page} doc_id={doc_id}",
+                    action=lambda: client.fetch_detail_page(result["detail_url"]),
+                )
+                detail = parse_detail_page(detail_html, result["detail_url"])
+            except Exception as exc:  # noqa: BLE001
+                failed_detail_docs += 1
+                _print_utf8(
+                    "crawl-manifest detail_page_skipped "
+                    f"page={current_page} doc_id={doc_id} detail_url={result['detail_url']} error={exc}"
+                )
+                continue
             row = {
                 **result,
                 **detail,
@@ -193,10 +286,14 @@ def crawl_manifest(args: Any) -> int:
             processed_docs += 1
 
         _print_utf8(
-            f"crawl-manifest page_complete page={current_page} total_pages_seen={parsed_page['total_pages']} processed_docs={processed_docs}"
+            "crawl-manifest page_complete "
+            f"page={current_page} total_pages_seen={parsed_page['total_pages']} "
+            f"processed_docs={processed_docs} failed_detail_docs={failed_detail_docs}"
         )
         current_page += 1
-    _print_utf8(f"crawl-manifest done processed_docs={processed_docs} output={output}")
+    _print_utf8(
+        f"crawl-manifest done processed_docs={processed_docs} failed_detail_docs={failed_detail_docs} output={output}"
+    )
     return 0
 
 
